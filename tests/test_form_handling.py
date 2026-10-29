@@ -1,6 +1,8 @@
 import unittest
+import json
+from pathlib import Path
 
-from form_handling import classify_apply_result, classify_form
+from form_handling import classify_apply_result, classify_form, detect_questions_in_html
 
 
 class FormHandlingTests(unittest.TestCase):
@@ -21,6 +23,20 @@ class FormHandlingTests(unittest.TestCase):
         for code in ("test_required", "test-required"):
             with self.subTest(code=code):
                 self.assertEqual(classify_apply_result(code).status, "manual")
+
+    def test_observed_x5_error_body_is_manual(self):
+        fixture = Path(__file__).parent / "fixtures" / "hh-test-required.json"
+        body = json.loads(fixture.read_text(encoding="utf-8"))
+        self.assertEqual(classify_apply_result(body["error"]).status, "manual")
+
+    def test_detects_actual_radio_and_textarea_patterns(self):
+        fixture = Path(__file__).parent / "fixtures" / "hh-form-fields.html"
+        result = detect_questions_in_html(fixture.read_text(encoding="utf-8"))
+        self.assertEqual(result.status, "manual")
+        self.assertIn("2 task fields", result.reason)
+
+    def test_unrecognized_page_is_not_assumed_clear(self):
+        self.assertEqual(detect_questions_in_html("<form></form>").status, "unknown")
 
     def test_unknown_error_does_not_authorize_retry(self):
         self.assertEqual(classify_apply_result("unrecognized").status, "unknown")

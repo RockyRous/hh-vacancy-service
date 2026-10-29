@@ -1,6 +1,7 @@
 """Классификация дополнительных шагов hh без отправки откликов."""
 
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from typing import Any, Mapping
 
 
@@ -8,6 +9,26 @@ from typing import Any, Mapping
 class FormDecision:
     status: str  # manual, unknown, clear
     reason: str
+
+
+class _QuestionFields(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.names: set[str] = set()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        name = dict(attrs).get("name") or ""
+        if tag in {"input", "textarea", "select"} and name.startswith("task_"):
+            self.names.add(name)
+
+
+def detect_questions_in_html(page: str) -> FormDecision:
+    """Искать поля анкеты; их отсутствие не подтверждает отсутствия анкеты."""
+    parser = _QuestionFields()
+    parser.feed(page)
+    if parser.names:
+        return FormDecision("manual", f"application form contains {len(parser.names)} task fields")
+    return FormDecision("unknown", "recognized question fields not found")
 
 
 def classify_form(vacancy: Mapping[str, Any], *, preflight: str = "unknown") -> FormDecision:
