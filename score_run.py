@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from scan import MOSCOW, ROOT, STATE, StopScan, fetch
-from scoring import score_vacancy
+from scoring import salary_upper_from_text, score_vacancy
 
 
 def vacancy_text(page: str) -> str:
@@ -79,6 +79,7 @@ def main() -> int:
             else:
                 description = vacancy_text(fetch(item["url"], cookie))
             result = score_vacancy(item["name"], description)
+            result["salary_from_description"] = salary_upper_from_text(description, item.get("salary") or {})
             now = datetime.now(MOSCOW).isoformat()
             if previous:
                 db.execute("INSERT INTO score_history(run_id,vacancy_id,evaluated_at,description,result) VALUES (?,?,?,?,?)", (run_id, item["id"], *previous))
@@ -110,12 +111,18 @@ def main() -> int:
                 constraints.append("Python не указан")
             if value.get("ml_without_llm_signal"):
                 constraints.append("в ML-роли не найдены признаки LLM или агентов")
+            if value.get("other_stack_without_python"):
+                constraints.append("указан другой стек без Python")
             suffix = "; " + ", ".join(constraints) if constraints else ""
             return f"{profile}: {value['score']} (роль: {role}; навыки: {skills}{suffix})"
         values = " | ".join(explain(p, x) for p, x in scores.items())
         best = result.get("selected")
         status = "ниже порога" if result.get("below_threshold") else f"рекомендуется {best}"
-        lines.append(f"- {item['name']} — {item['company']} | {item['url']} | {values} | {status} | форма: {item['form_status']}")
+        text_salary = result.get("salary_from_description")
+        if text_salary and text_salary["below_threshold"]:
+            status = "исключена по зарплате из описания"
+        salary_note = f" | зарплата в тексте: {text_salary['excerpt']}" + (" — ниже 200 000 RUB" if text_salary['below_threshold'] else "") if text_salary else ""
+        lines.append(f"- {item['name']} — {item['company']} | {item['url']} | {values} | {status}{salary_note} | форма: {item['form_status']}")
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"Отчёт: {args.report}; оценено: {len(scored)}", flush=True)

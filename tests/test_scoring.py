@@ -2,7 +2,7 @@ import unittest
 import html
 import json
 
-from scoring import score_vacancy
+from scoring import salary_upper_from_text, score_vacancy
 from score_run import vacancy_text
 from scan import StopScan
 
@@ -41,6 +41,22 @@ class ScoringTests(unittest.TestCase):
         result = score_vacancy("AI RevOps Specialist", "LLM RAG агенты LangChain Docker FastAPI PostgreSQL")
         self.assertTrue(result["below_threshold"])
 
+    def test_ai_engineering_in_security_is_not_excluded_by_domain(self):
+        result = score_vacancy("Старший инженер по информационной безопасности (AI)", "Python, RAG, LLM, LangChain: разработка AI агентов и интеграций")
+        self.assertGreaterEqual(result["scores"]["ai"]["score"], 50)
+
+    def test_backend_tech_lead_can_match_even_if_language_unspecified(self):
+        result = score_vacancy("Senior Backend Engineer / Tech Lead", "Backend API интеграции и асинхронная обработка. SQL Docker, архитектура, code review, команда.")
+        self.assertGreaterEqual(result["scores"]["lead"]["score"], 50)
+
+    def test_node_only_backend_lead_is_not_accepted_for_python(self):
+        result = score_vacancy("Lead Backend Engineer", "Node.js TypeScript PostgreSQL Redis Docker, архитектура, API, интеграции, команда и code review.")
+        self.assertTrue(result["below_threshold"])
+
+    def test_infrastructure_cto_without_python_is_not_admitted(self):
+        result = score_vacancy("Технический директор (CTO)", "Управление серверной инфраструктурой, архитектура, команда, Docker, SQL, code review")
+        self.assertTrue(result["below_threshold"])
+
     def test_test_automation_is_below_threshold(self):
         result = score_vacancy("Инженер по автоматизации тестирования", "Python FastAPI PostgreSQL SQL Docker и API")
         self.assertTrue(result["below_threshold"])
@@ -59,6 +75,21 @@ class ScoringTests(unittest.TestCase):
         self.assertNotIn("python", skills)
         self.assertNotIn("docker", skills)
         self.assertIn("postgresql", skills)
+
+    def test_explicit_salary_range_in_description(self):
+        result = salary_upper_from_text("доход 120 000 – 170 000 ₽ на руки", {"noCompensation": {}})
+        self.assertEqual(result["to"], 170000)
+        self.assertTrue(result["below_threshold"])
+        boundary = salary_upper_from_text("оклад 150 000 – 200 000 ₽", {})
+        self.assertFalse(boundary["below_threshold"])
+
+    def test_ambiguous_or_other_currency_not_extracted(self):
+        self.assertIsNone(salary_upper_from_text("доход 120 000 – 170 000 USD", {}))
+        self.assertIsNone(salary_upper_from_text("зарплата 100 000 – 150 000 ₽ или зарплата 200 000 – 300 000 ₽", {}))
+        self.assertIsNone(salary_upper_from_text("оклад 100 000 – 150 000 ₽", {"currencyCode": "USD"}))
+
+    def test_existing_upper_bound_not_overwritten(self):
+        self.assertIsNone(salary_upper_from_text("оклад 100 000 – 150 000 ₽", {"to": 250000, "currencyCode": "RUR"}))
 
 
 if __name__ == "__main__":
