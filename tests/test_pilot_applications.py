@@ -2,7 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +16,23 @@ NOW = datetime(2026, 10, 30, 12, tzinfo=scan.MOSCOW)
 
 
 class PilotTests(unittest.TestCase):
+    def test_delay_uses_saved_attempt_time_and_honors_off(self):
+        db = sqlite3.connect(":memory:")
+        application_history.setup(db)
+        db.execute("INSERT INTO application_attempts(vacancy_id,status,source,attempted_at) VALUES ('1','confirmed','service',?)", (NOW.isoformat(),))
+        db.commit()
+        current = [NOW + timedelta(seconds=27)]
+        sleeps = []
+        def sleep(seconds):
+            sleeps.append(seconds)
+            current[0] += timedelta(seconds=seconds)
+        self.assertTrue(pilot.wait_between_attempts(db, enabled=lambda: True, clock=lambda: current[0], sleep=sleep))
+        self.assertEqual(sum(sleeps), 3)
+        current[0] = NOW + timedelta(seconds=27)
+        states = iter([True, False])
+        self.assertFalse(pilot.wait_between_attempts(db, enabled=lambda: next(states), clock=lambda: current[0], sleep=sleep))
+        db.close()
+
     def test_candidates_are_sent_in_score_order_and_snapshot_is_saved(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -4,13 +4,33 @@ import html
 import json
 import time
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import application_sender
 import control
 import scan
 import scoring
 from form_handling import classify_form, is_simple_response_form
+
+
+def wait_between_attempts(db, *, enabled, delay_seconds=30, clock=None, sleep=time.sleep):
+    """Пауза от последней отправки сохраняется между запусками процесса."""
+    if delay_seconds < 0:
+        raise ValueError("invalid delay")
+    clock = clock or (lambda: datetime.now(scan.MOSCOW))
+    row = db.execute("SELECT attempted_at FROM application_attempts WHERE source='service' AND attempted_at IS NOT NULL ORDER BY attempted_at DESC LIMIT 1").fetchone()
+    if not row:
+        return enabled()
+    last = datetime.fromisoformat(row[0])
+    if last.tzinfo is None:
+        raise ValueError("attempt timestamp has no timezone")
+    deadline = last + timedelta(seconds=delay_seconds)
+    while enabled():
+        remaining = (deadline - clock()).total_seconds()
+        if remaining <= 0:
+            return True
+        sleep(min(1, remaining))
+    return False
 
 
 def run(db, *, run_id, profiles, cookie, now=None, notify=None, delay_seconds=30):
@@ -42,7 +62,7 @@ def run(db, *, run_id, profiles, cookie, now=None, notify=None, delay_seconds=30
         candidates.append((value, item, json.loads(raw_vacancy), score, description))
     candidates.sort(key=lambda entry: entry[0], reverse=True)
     results = []
-    for index, (_, item, raw_vacancy, score, description) in enumerate(candidates):
+    for _, item, raw_vacancy, score, description in candidates:
         if not control.enabled():
             break
         selected = score["selected"]
@@ -65,6 +85,8 @@ def run(db, *, run_id, profiles, cookie, now=None, notify=None, delay_seconds=30
         evidence = {"history_complete": True, "scoring_validated": True, "form_checked": True,
                     "resume_snapshot": resume, "vacancy_snapshot": {"item": item, "raw": raw_vacancy, "description": description},
                     "history_scope": "active and archived tabs; hidden data may be unavailable"}
+        if not wait_between_attempts(db, enabled=control.enabled, delay_seconds=delay_seconds):
+            break
         result = application_sender.send_one_hh(db, item=item, score=score, profiles=profiles, templates=templates,
                                                   run_id=run_id, now=datetime.now(scan.MOSCOW), evidence=evidence, max_run=20)
         entry = {"vacancy_id": item["id"], "name": item["name"], "url": item["url"], "profile": selected, "status": result}
@@ -79,12 +101,4 @@ def run(db, *, run_id, profiles, cookie, now=None, notify=None, delay_seconds=30
             notify(f"Отклик: {entry['name']} — {entry['url']} | резюме: {entry['profile']} | результат: {entry['status']}{suffix}")
         if result in {"uncertain", "off", "duplicate_or_limit", "blocked"} or len(results) >= 20:
             break
-        if index + 1 == len(candidates):
-            break
-        # Не посылать отклики плотной очередью; /off проверяется во время ожидания.
-        deadline = time.monotonic() + delay_seconds
-        while time.monotonic() < deadline:
-            if not control.enabled():
-                return results
-            time.sleep(max(0, min(1, deadline - time.monotonic())))
     return results
