@@ -15,6 +15,9 @@ def setup(db: sqlite3.Connection) -> None:
         status TEXT NOT NULL, letter TEXT, template_id TEXT, template_version TEXT,
         attempted_at TEXT, confirmed_at TEXT, source TEXT NOT NULL, detail TEXT
     )""")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(application_attempts)")}
+    if "decision_snapshot" not in columns:
+        db.execute("ALTER TABLE application_attempts ADD COLUMN decision_snapshot TEXT")
     db.commit()
 
 
@@ -93,7 +96,7 @@ def import_history(db: sqlite3.Connection, entries: list[dict]) -> int:
     return inserted
 
 
-def reserve_attempt(db: sqlite3.Connection, *, vacancy_id: str, resume_id: str, run_id: int, letter: str, template_id: str, template_version: str, now: datetime, max_run: int = 5, max_day: int = 15, max_rolling: int = 15) -> bool:
+def reserve_attempt(db: sqlite3.Connection, *, vacancy_id: str, resume_id: str, run_id: int, letter: str, template_id: str, template_version: str, now: datetime, max_run: int = 5, max_day: int = 15, max_rolling: int = 15, snapshot: dict | None = None) -> bool:
     """Атомарный резерв для будущего отправщика; не отправляет запрос.
 
     Вызывающий код обязан заранее проверить все бизнес-условия и режим. Эта
@@ -115,7 +118,7 @@ def reserve_attempt(db: sqlite3.Connection, *, vacancy_id: str, resume_id: str, 
         if per_run >= max_run or day >= max_day or rolling >= max_rolling:
             db.rollback()
             return False
-        db.execute("INSERT INTO application_attempts VALUES (?,?,?,?,?,?,?,?,?,?,?)", (vacancy_id, resume_id, run_id, "sending", letter, template_id, template_version, now.isoformat(), None, "service", None))
+        db.execute("INSERT INTO application_attempts (vacancy_id,resume_id,run_id,status,letter,template_id,template_version,attempted_at,confirmed_at,source,detail,decision_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (vacancy_id, resume_id, run_id, "sending", letter, template_id, template_version, now.isoformat(), None, "service", None, json.dumps(snapshot, ensure_ascii=False) if snapshot is not None else None))
         db.commit()
         return True
     except Exception:
