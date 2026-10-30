@@ -22,6 +22,39 @@ class _QuestionFields(HTMLParser):
             self.names.add(name)
 
 
+class _ResponseForm(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.inside = False
+        self.forms = 0
+        self.safe = True
+        self.xsrf = False
+
+    def handle_starttag(self, tag, attrs):
+        attr = dict(attrs)
+        if tag == "form" and attr.get("name") == "vacancy_response":
+            self.inside = True
+            self.forms += 1
+            if attr.get("method", "").lower() != "post" or attr.get("action"):
+                self.safe = False
+        elif self.inside and tag in {"input", "textarea", "select"}:
+            if tag == "input" and attr.get("name") == "_xsrf" and attr.get("type", "").lower() == "hidden":
+                self.xsrf = True
+            else:
+                self.safe = False
+
+    def handle_endtag(self, tag):
+        if tag == "form" and self.inside:
+            self.inside = False
+
+
+def is_simple_response_form(page: str) -> bool:
+    """Узнать наблюдавшуюся простую форму; это не гарантирует отсутствие других шагов hh."""
+    parser = _ResponseForm()
+    parser.feed(page)
+    return parser.forms == 1 and parser.safe and parser.xsrf and not parser.inside
+
+
 def detect_questions_in_html(page: str) -> FormDecision:
     """Искать поля анкеты; их отсутствие не подтверждает отсутствия анкеты."""
     parser = _QuestionFields()

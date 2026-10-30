@@ -1,4 +1,4 @@
-"""Личный Telegram-бот и расписание read-only обходов hh."""
+"""Личный Telegram-бот, мониторинг и ограниченный пилот откликов hh."""
 
 from __future__ import annotations
 
@@ -14,6 +14,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import control
+import application_history
+import applications
+import cycle_extensions
+import pilot_applications
 import scan
 import score_run
 
@@ -104,6 +108,7 @@ def next_slot(now: datetime) -> datetime:
 
 def queue_cycle_report(run_id: int) -> None:
     with control.connect() as db:
+        application_history.setup(db)
         db.execute("CREATE TABLE IF NOT EXISTS reported_below (vacancy_id TEXT PRIMARY KEY)")
         db.execute("CREATE TABLE IF NOT EXISTS scores (run_id INTEGER NOT NULL, vacancy_id TEXT NOT NULL, fetched_at TEXT NOT NULL, description TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(run_id, vacancy_id))")
         run = db.execute("SELECT status,error FROM runs WHERE id=?", (run_id,)).fetchone()
@@ -113,11 +118,13 @@ def queue_cycle_report(run_id: int) -> None:
         today = [item for item in observations if item.get("date_status") == "today"]
         salary_text_rejected = {vid for vid, result in scores.items() if (result.get("salary_from_description") or {}).get("below_threshold")}
         qualified = [item for item in today if item.get("salary_status") == "pass" and item["id"] not in salary_text_rejected]
-        lines = [f"Обход #{run_id}: {run[0] if run else 'неизвестно'}", f"Найдено уникальных: {len(observations)}; сегодня: {len(today)}; зарплатный фильтр: {len(qualified)}; оценено: {len(scores)}; откликов: 0."]
+        attempts = db.execute("SELECT COUNT(*) FROM application_attempts WHERE source='service' AND run_id=?", (run_id,)).fetchone()[0]
+        lines = [f"Обход #{run_id}: {run[0] if run else 'неизвестно'}", f"Найдено уникальных: {len(observations)}; сегодня: {len(today)}; зарплатный фильтр: {len(qualified)}; оценено: {len(scores)}; попыток отклика: {attempts}."]
         if run and run[1]:
             lines.append(f"Причина неполного обхода: {run[1]}")
-        manual = [v for v in qualified if v.get("form_status") == "manual"]
-        unknown = [v for v in qualified if v.get("form_status") in {"unknown", "not_checked"}]
+        queued = {row[0] for row in db.execute("SELECT vacancy_id FROM manual_applications WHERE status='open'")}
+        manual = [v for v in qualified if v.get("form_status") == "manual" and v["id"] in queued]
+        unknown = [v for v in qualified if v.get("form_status") in {"unknown", "not_checked"} and v["id"] in queued]
         lines.append(f"Анкеты: {len(manual)}; форма не проверена или неизвестна: {len(unknown)}.")
         if manual:
             lines.append("Требуют ручного отклика:")
@@ -172,21 +179,61 @@ def run_cycle() -> None:
         if not cookies.get("hhtoken"):
             raise ValueError("нет сессии hh")
         cookie = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        with control.connect() as db:
+            cycle_extensions.refresh_history(db, cookie)
+            if control.enabled():
+                cycle_extensions.report_history_events(db, cookie)
+        if not control.enabled():
+            return
         result = scan.scan(profiles, cookie, control.DEFAULT_DB, scan.ROOT / "reports/latest.md")
         with control.connect() as db:
             run_id = db.execute("SELECT MAX(id) FROM runs").fetchone()[0]
         if result == 0 and control.enabled():
             result = score_run.main([])
+        with control.connect() as db:
+            cycle_extensions.queue_candidates(db, run_id, profiles, datetime.now(scan.MOSCOW))
+            if result == 0 and control.enabled():
+                pilot_results = pilot_applications.run(db, run_id=run_id, profiles=profiles, cookie=cookie)
+                for entry in pilot_results:
+                    db.execute("INSERT INTO notifications(text,next_attempt) VALUES (?,?)", (
+                        f"Пилотный отклик: {entry['name']} — {entry['url']} | резюме: {entry['profile']} | результат: {entry['status']}", time.time()))
+            cycle_extensions.render_manual(db)
         queue_cycle_report(run_id)
         if result and control.enabled():
             control.set_enabled(False, reason="ошибка обхода или оценки")
             control.enqueue("Работа hh остановлена из-за ошибки. Проверь локальные отчёты и после устранения проблемы отправь /on.")
-    except Exception:
-        control.set_enabled(False, reason="ошибка настроек или базы")
-        control.enqueue("Работа hh остановлена: ошибка настроек или базы. Проверь локальные файлы, затем отправь /on.")
+    except Exception as exc:
+        if control.enabled():
+            control.set_enabled(False, reason="ошибка обхода hh")
+            control.enqueue(f"Работа hh остановлена: {type(exc).__name__}. Проверь локальные файлы, затем отправь /on.")
 
 
-async def run_bot(token: str, owner: int, stage1_probe: bool = False, stage2_probe: bool = False) -> None:
+def run_pilot_once() -> None:
+    try:
+        profiles = json.loads((scan.ROOT / "data/profiles.json").read_text(encoding="utf-8-sig"))
+        session = json.loads((Path.home() / ".codex/hh-session/session.json").read_text(encoding="utf-8-sig"))
+        cookie = "; ".join(f"{k}={v}" for k, v in session["cookies"].items())
+        with control.connect() as db:
+            cycle_extensions.refresh_history(db, cookie)
+            if not control.enabled():
+                return
+            row = db.execute("SELECT id,started FROM runs WHERE status='complete' ORDER BY id DESC LIMIT 1").fetchone()
+            if not row or datetime.fromisoformat(row[1]).astimezone(scan.MOSCOW).date() != datetime.now(scan.MOSCOW).date():
+                raise ValueError("нет завершённого сегодняшнего обхода")
+            results = pilot_applications.run(db, run_id=row[0], profiles=profiles, cookie=cookie)
+            for entry in results:
+                db.execute("INSERT INTO notifications(text,next_attempt) VALUES (?,?)", (
+                    f"Пилотный отклик: {entry['name']} — {entry['url']} | резюме: {entry['profile']} | результат: {entry['status']}", time.time()))
+            cycle_extensions.render_manual(db)
+        if not results:
+            control.enqueue("Пилот: подходящих вакансий с проверенной простой формой не найдено; отправок нет.")
+    except Exception as exc:
+        if control.enabled():
+            control.set_enabled(False, reason="ошибка пилота hh")
+            control.enqueue(f"Пилот hh остановлен: {type(exc).__name__}. Проверь локальные данные и снова включи /on после исправления.")
+
+
+async def run_bot(token: str, owner: int, stage1_probe: bool = False, stage2_probe: bool = False, run_now: bool = False, pilot_now: bool = False, verify_now: bool = False, verify_letter: bool = False) -> None:
     was_enabled = False
     due = None
     worker = None
@@ -196,6 +243,13 @@ async def run_bot(token: str, owner: int, stage1_probe: bool = False, stage2_pro
     if stage2_probe and control.enabled() and worker is None:
         import stage2_probe as probe
         worker = asyncio.create_task(asyncio.to_thread(probe.run))
+    if run_now and control.enabled() and worker is None:
+        worker = asyncio.create_task(asyncio.to_thread(run_cycle))
+    if pilot_now and control.enabled() and worker is None:
+        worker = asyncio.create_task(asyncio.to_thread(run_pilot_once))
+    if verify_now and control.enabled() and worker is None:
+        import verify_uncertain
+        worker = asyncio.create_task(asyncio.to_thread(verify_uncertain.run, verify_letter))
     while True:
         active = control.enabled()
         now = datetime.now(scan.MOSCOW)
@@ -228,11 +282,19 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
         return 2
-    print("Telegram-бот запущен. Отклики отключены.", flush=True)
+    print("Telegram-бот запущен. Пилот: до одной попытки за обход.", flush=True)
     try:
         with control.single_instance():
+            with control.connect() as db:
+                applications.setup(db)
+                recovered = applications.recover_inflight(db)
+            if recovered:
+                control.set_enabled(False, reason="незавершённая попытка отклика")
+                control.enqueue(f"Найдены незавершённые попытки отклика: {recovered}. Проверь историю hh перед продолжением.")
             asyncio.run(run_bot(token, owner, stage1_probe="--stage1-probe" in sys.argv,
-                                stage2_probe="--stage2-probe" in sys.argv))
+                                stage2_probe="--stage2-probe" in sys.argv, run_now="--run-now" in sys.argv,
+                                pilot_now="--pilot-now" in sys.argv, verify_now="--verify-uncertain" in sys.argv or "--verify-letter" in sys.argv,
+                                verify_letter="--verify-letter" in sys.argv))
     except KeyboardInterrupt:
         print("Остановлено.")
     except RuntimeError as exc:

@@ -1,4 +1,4 @@
-"""Механизм одной попытки. Транспорт передаётся вызывающим кодом; к боту не подключён."""
+"""Механизм одной попытки отклика и подключение транспорта hh."""
 
 from datetime import datetime
 
@@ -19,11 +19,11 @@ def send_one_hh(db, *, db_path=control.DEFAULT_DB, **kwargs):
 
 
 def send_one(db, *, item, score, profiles, templates, run_id, now, evidence,
-             enabled, pause, post, verify=None):
+             enabled, pause, post, verify=None, max_run=5):
     """Проверить условия, сохранить намерение и вызвать post максимум один раз.
 
     evidence — результаты проверок вызывающего кода, а не настройки пользователя.
-    Сейчас полноценный источник этих свидетельств и сетевой транспорт не подключены.
+    На пилоте фиксируется охват активной и архивной вкладок; скрытые данные могут отсутствовать.
     """
     if now.tzinfo is None:
         raise ValueError("timezone required")
@@ -50,12 +50,12 @@ def send_one(db, *, item, score, profiles, templates, run_id, now, evidence,
     if not valid:
         return "blocked"
     snapshot = {"resume": evidence["resume_snapshot"], "vacancy": evidence["vacancy_snapshot"],
-                "score": score, "form_status": item["form_status"]}
+                "score": score, "form_status": item["form_status"], "history_scope": evidence.get("history_scope")}
     vid = str(item["id"])
     if not applications.reserve_attempt(
         db, vacancy_id=vid, resume_id=profiles[selected], run_id=run_id,
         letter=template["text"], template_id=template["id"],
-        template_version=str(template["version"]), now=now, snapshot=snapshot,
+        template_version=str(template["version"]), now=now, snapshot=snapshot, max_run=max_run,
     ):
         return "duplicate_or_limit"
     if not enabled():
@@ -69,7 +69,7 @@ def send_one(db, *, item, score, profiles, templates, run_id, now, evidence,
         http_status, body = None, None
     verified = None
     verification_restricted = False
-    if http_status in (200, 201) and isinstance(body, dict) and not body.get("error") and verify and enabled():
+    if http_status in (200, 201) and (not isinstance(body, dict) or not body.get("error")) and verify and enabled():
         try:
             verified = verify(vid, template["text"])
             if verified not in (True, False, None):
@@ -79,8 +79,8 @@ def send_one(db, *, item, score, profiles, templates, run_id, now, evidence,
         except Exception:
             verified = None
     # Реальный формат success пока не зафиксирован; точное письмо — независимое подтверждение.
-    if verified is True and body.get("success") is not False and applications.classify_response(http_status, body)[0] == "uncertain":
-        body = {**body, "success": True}
+    if verified is True and (not isinstance(body, dict) or body.get("success") is not False) and applications.classify_response(http_status, body)[0] == "uncertain":
+        body = {**(body if isinstance(body, dict) else {}), "success": True}
     status, should_pause = applications.finish_attempt(db, vid, http_status, body, now, letter_verified=verified)
     if status == "manual":
         application_history.setup(db)

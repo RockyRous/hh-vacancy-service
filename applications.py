@@ -149,6 +149,10 @@ def finish_attempt(db: sqlite3.Connection, vacancy_id: str, http_status: int | N
     if status == "confirmed" and letter_verified is False:
         status, pause = "uncertain", True
     evidence = {"http_status": http_status, "error": (body or {}).get("error") if isinstance(body, dict) else None, "letter_verified": letter_verified}
+    if isinstance(body, dict):
+        evidence.update({"success": body.get("success") if isinstance(body.get("success"), (bool, int, str)) else None,
+                         "chat_id_present": bool(body.get("chat_id")), "topic_id_present": bool(body.get("topic_id")),
+                         "response_keys": sorted(str(key) for key in body)})
     with db:
         changed = db.execute("UPDATE application_attempts SET status=?,confirmed_at=?,detail=? WHERE vacancy_id=? AND status='sending'", (status, now.astimezone(MOSCOW).isoformat() if status == "confirmed" else None, json.dumps(evidence, ensure_ascii=False), vacancy_id)).rowcount
         if changed != 1:

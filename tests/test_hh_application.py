@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-from hh_application import Disabled, HhApplication, NoRedirect
+from hh_application import Disabled, HhApplication, NoRedirect, SafeGetRedirect
 
 
 class Response:
@@ -22,7 +22,7 @@ class Response:
 class HhApplicationTests(unittest.TestCase):
     def setUp(self):
         self.requests = []
-        self.client = HhApplication({"hhtoken": "fake", "_xsrf": "fake"}, opener=self)
+        self.client = HhApplication({"hhtoken": "fake", "_xsrf": "fake"}, enabled=lambda: True, opener=self)
 
     def open(self, request, timeout):
         self.requests.append(request)
@@ -53,14 +53,33 @@ class HhApplicationTests(unittest.TestCase):
             self.client.post("123", "r", "text")
         self.assertEqual(self.requests, [])
 
+    def test_get_redirect_rejects_other_hosts_and_stops_when_off(self):
+        redirect = SafeGetRedirect(lambda: True)
+        self.assertIsNone(redirect.redirect_request(None, None, 302, "", {}, "https://other.example"))
+        with self.assertRaises(Disabled):
+            SafeGetRedirect(lambda: False).redirect_request(None, None, 302, "", {}, "https://hh.ru/")
+
     def test_verification_reads_only_own_exact_letter(self):
         self.client.chat_id = "42"
         state = {"chatData": {"chat": {"currentParticipantId": 1, "messages": {"items": [
             {"participantId": 2, "text": "Здравствуйте!"}, {"participantId": 1, "text": "Здравствуйте!"}]}}}}
-        page = ('<template id="HH-Lux-InitialState">' + json.dumps(state, ensure_ascii=False) + '</template>').encode()
-        with patch.object(self.client.opener, "open", return_value=Response(page)):
+        with patch.object(self.client, "chat_state", return_value=state["chatData"]["chat"]):
             self.assertTrue(self.client.verify("123", "Здравствуйте!"))
             self.assertIsNone(self.client.verify("123", "Другое письмо"))
+
+    def test_chat_uses_hh_build_and_json_negotiation(self):
+        payload = {"chatData": {"chat": {"currentParticipantId": 1}}}
+        with patch.object(self.client, "request", side_effect=[(200, b'{"build":"26.1.2"}'), (200, json.dumps(payload).encode())]) as request:
+            self.assertEqual(self.client.chat_state("42"), {"currentParticipantId": 1})
+        self.assertEqual(request.call_args_list[1].kwargs["headers"]["X-Static-Version"], "26.1.2")
+
+    def test_missing_chat_id_is_found_in_history(self):
+        state = {"applicantNegotiations": {"filterInUse": "active", "pageCount": "1", "topicList": [{"vacancyId": 123, "chatId": 42}]}}
+        page = '<template id="HH-Lux-InitialState">' + json.dumps(state) + '</template>'
+        chat = {"currentParticipantId": 1, "messages": {"items": [{"participantId": 1, "text": "Привет"}]}}
+        with patch("hh_application.scan.fetch", return_value=page), patch.object(self.client, "chat_state", return_value=chat):
+            self.assertTrue(self.client.verify("123", "Привет"))
+        self.assertEqual(self.client.chat_id, "42")
 
 
 if __name__ == "__main__":

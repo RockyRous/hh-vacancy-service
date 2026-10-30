@@ -91,7 +91,7 @@ def process_update(update: dict, owner: int, path: Path = DEFAULT_DB) -> bool:
             if command == "/on":
                 db.execute("UPDATE control SET value='1' WHERE key='enabled'")
                 db.execute("UPDATE control SET value='' WHERE key='reason'")
-                reply = "Поиск hh включён. Ближайший обход — по расписанию. Отклики пока не отправляются."
+                reply = "Работа hh включена. По расписанию работает пилот: до одной попытки отклика за проход."
             elif command == "/off":
                 db.execute("UPDATE control SET value='0' WHERE key='enabled'")
                 db.execute("UPDATE control SET value='выключено владельцем' WHERE key='reason'")
@@ -102,7 +102,7 @@ def process_update(update: dict, owner: int, path: Path = DEFAULT_DB) -> bool:
                 has_runs = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'").fetchone()
                 last = db.execute("SELECT started,status FROM runs ORDER BY id DESC LIMIT 1").fetchone() if has_runs else None
                 queued = db.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
-                reply = f"Поиск hh: {'включён' if state == '1' else 'выключен'}. Режим: поиск и оценка без откликов. Расписание: 09:00, 12:00, 15:00, 18:00, 21:00 МСК."
+                reply = f"Работа hh: {'включена' if state == '1' else 'выключена'}. Режим: пилот, до одной попытки отклика за проход; поиск, ручной список и мониторинг. Расписание: 09:00, 12:00, 15:00, 18:00, 21:00 МСК."
                 if reason:
                     reply += f" Причина паузы: {reason}."
                 reply += f" Последний обход: {last[0]} ({last[1]})." if last else " Обходов пока нет."

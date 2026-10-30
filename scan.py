@@ -15,7 +15,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from form_handling import classify_form, detect_questions_in_html
+from form_handling import classify_form, detect_questions_in_html, is_simple_response_form
 import control
 
 ROOT = Path(__file__).resolve().parent
@@ -157,6 +157,8 @@ def scan(profiles: dict, cookie: str, db_path: Path, report_path: Path, pause: f
                 url = "https://hh.ru/applicant/vacancy_response?" + urllib.parse.urlencode({"vacancyId": item["id"]})
                 page = fetch(url, cookie)
                 decision = detect_questions_in_html(page)
+                if decision.status == "unknown" and is_simple_response_form(page):
+                    decision = classify_form({}, preflight="clear")
             item["form_status"], item["form_reason"] = decision.status, decision.reason
             print(f"Формы: {number}/{len(eligible)} — {item['id']}: {decision.status}", flush=True)
             time.sleep(pause)

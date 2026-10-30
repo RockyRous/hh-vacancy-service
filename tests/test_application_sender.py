@@ -46,6 +46,13 @@ class SenderTests(unittest.TestCase):
         self.assertEqual(self.send(), "duplicate_or_limit")
         self.assertEqual(len(self.calls), 1)
 
+    def test_pilot_limit_is_atomic_for_same_run(self):
+        self.args["max_run"] = 1
+        self.assertEqual(self.send(), "confirmed")
+        self.args["item"]["id"] = "124"
+        self.assertEqual(self.send(), "duplicate_or_limit")
+        self.assertEqual(len(self.calls), 1)
+
     def test_missing_evidence_form_or_approval_blocks_without_reservation(self):
         for key in ("history_complete", "scoring_validated", "resume_snapshot", "vacancy_snapshot", "form_checked"):
             value = self.args["evidence"].pop(key)

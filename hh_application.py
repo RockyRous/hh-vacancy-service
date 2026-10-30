@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 import control
+import scan
 from scan import UA
 
 
@@ -24,6 +25,20 @@ class Restricted(Exception):
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+class SafeGetRedirect(urllib.request.HTTPRedirectHandler):
+    def __init__(self, enabled):
+        super().__init__()
+        self.enabled = enabled
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urlsplit(newurl)
+        if not self.enabled():
+            raise Disabled("hh выключен")
+        if target.scheme != "https" or target.hostname not in {"hh.ru", "spb.hh.ru"}:
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def session(path=None):
@@ -42,6 +57,7 @@ class HhApplication:
         self.cookies = cookies
         self.enabled = enabled
         self.opener = opener or urllib.request.build_opener(NoRedirect())
+        self.get_opener = opener or urllib.request.build_opener(SafeGetRedirect(enabled))
         self.chat_id = None
 
     def request(self, url, *, data=None, headers=None):
@@ -54,7 +70,7 @@ class HhApplication:
         request = urllib.request.Request(url, data=data, headers={"User-Agent": UA, "Cookie": cookie,
             "X-XSRFToken": self.cookies["_xsrf"], **(headers or {})})
         try:
-            with self.opener.open(request, timeout=25) as response:
+            with (self.opener if data is not None else self.get_opener).open(request, timeout=25) as response:
                 return response.status, response.read()
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read()
@@ -81,18 +97,34 @@ class HhApplication:
 
     def verify(self, vacancy_id, letter):
         if not self.chat_id:
-            return None
-        status, raw = self.request(f"https://hh.ru/chat/{self.chat_id}")
-        if status in (401, 403, 429):
-            raise Restricted(f"hh HTTP {status}")
-        if status != 200:
-            return None
-        page = raw.decode("utf-8")
-        match = re.search(r'<template[^>]*id=["\']HH-Lux-InitialState["\'][^>]*>(.*?)</template>', page, re.S)
-        if not match:
-            return None
-        state = json.loads(html.unescape(match.group(1)))
-        chat = ((state.get("chatData") or {}).get("chat") or {})
+            cookie = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
+            for number in range(50):
+                if not self.enabled():
+                    raise Disabled("hh выключен")
+                try:
+                    page = scan.fetch(f"https://hh.ru/applicant/negotiations?filter=active&page={number}", cookie)
+                except scan.StopScan as exc:
+                    if "HTTP 401" in str(exc) or "HTTP 403" in str(exc) or "HTTP 429" in str(exc):
+                        raise Restricted(str(exc)) from None
+                    raise
+                match = scan.STATE.search(page)
+                state = json.loads(html.unescape(match.group(1))) if match else {}
+                history = state.get("applicantNegotiations") or {}
+                if history.get("filterInUse") != "active" or not isinstance(history.get("topicList"), list):
+                    return None
+                topic = next((t for t in history["topicList"] if str(t.get("vacancyId")) == str(vacancy_id)), None)
+                if topic:
+                    chat = str(topic.get("chatId") or "")
+                    self.chat_id = chat if chat.isdigit() else None
+                    break
+                try:
+                    if number + 1 >= int(history["pageCount"]):
+                        break
+                except (KeyError, ValueError, TypeError):
+                    return None
+            if not self.chat_id:
+                return None
+        chat = self.chat_state(self.chat_id)
         me = chat.get("currentParticipantId")
         items = (chat.get("messages") or {}).get("items")
         if me is None or not isinstance(items, list):
@@ -102,3 +134,24 @@ class HhApplication:
             return True
         # Чат может быть неполным, поэтому отсутствие текста не доказывает несовпадение.
         return None
+
+    def chat_state(self, chat_id):
+        if not str(chat_id).isdigit():
+            raise ValueError("invalid chat ID")
+        status, raw = self.request("https://hh.ru/")
+        if status in (401, 403, 429):
+            raise Restricted(f"hh HTTP {status}")
+        if status != 200:
+            raise ValueError("hh build unavailable")
+        match = re.search(r'"build"\s*:\s*"(\d+(?:\.\d+){2,})"|sentry-release=xhh(?:%40|@)(\d+(?:\.\d+){2,})', raw.decode("utf-8"))
+        if not match:
+            raise ValueError("hh build missing")
+        version = match.group(1) or match.group(2)
+        status, raw = self.request(f"https://hh.ru/chat/{chat_id}", headers={"X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json", "X-Static-Version": version})
+        if status in (401, 403, 429):
+            raise Restricted(f"hh HTTP {status}")
+        if status != 200:
+            raise ValueError("chat unavailable")
+        state = json.loads(raw.decode("utf-8"))
+        return ((state.get("chatData") or {}).get("chat") or {})

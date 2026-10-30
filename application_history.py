@@ -97,7 +97,8 @@ def queue_manual(db, *, vacancy_id, url, title, reason, seen_at, profile=None, r
         db.execute("""INSERT INTO manual_applications(vacancy_id,url,title,resume_id,profile,reason,first_seen,last_seen)
         VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(vacancy_id) DO UPDATE SET
         url=excluded.url,title=excluded.title,resume_id=excluded.resume_id,profile=excluded.profile,
-        reason=excluded.reason,last_seen=excluded.last_seen""",
+        reason=excluded.reason,last_seen=excluded.last_seen,
+        status=CASE WHEN manual_applications.status='not_needed' THEN 'open' ELSE manual_applications.status END""",
         (str(vacancy_id), url, title, resume_id, profile, reason, stamp, stamp))
 
 

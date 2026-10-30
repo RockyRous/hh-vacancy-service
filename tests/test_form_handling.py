@@ -2,7 +2,7 @@ import unittest
 import json
 from pathlib import Path
 
-from form_handling import classify_apply_result, classify_form, detect_questions_in_html
+from form_handling import classify_apply_result, classify_form, detect_questions_in_html, is_simple_response_form
 
 
 class FormHandlingTests(unittest.TestCase):
@@ -37,6 +37,14 @@ class FormHandlingTests(unittest.TestCase):
 
     def test_unrecognized_page_is_not_assumed_clear(self):
         self.assertEqual(detect_questions_in_html("<form></form>").status, "unknown")
+
+    def test_only_recognized_simple_post_form_is_accepted_for_pilot(self):
+        base = '<form name="vacancy_response" method="POST"><input type="hidden" name="_xsrf"><button type="submit"></button>{}</form>'
+        self.assertTrue(is_simple_response_form(base.format("")))
+        for extra in ('<textarea name="task_123"></textarea>', '<input type="hidden" name="testRequired">', '<input name="question">'):
+            self.assertFalse(is_simple_response_form(base.format(extra)))
+        self.assertFalse(is_simple_response_form('<form name="vacancy_response" method="POST"></form>'))
+        self.assertFalse(is_simple_response_form(base.format("").replace('method="POST"', 'method="POST" action="https://example.com"')))
 
     def test_unknown_error_does_not_authorize_retry(self):
         self.assertEqual(classify_apply_result("unrecognized").status, "unknown")
