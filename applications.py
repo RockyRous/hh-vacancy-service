@@ -96,14 +96,14 @@ def import_history(db: sqlite3.Connection, entries: list[dict]) -> int:
     return inserted
 
 
-def reserve_attempt(db: sqlite3.Connection, *, vacancy_id: str, resume_id: str, run_id: int, letter: str, template_id: str, template_version: str, now: datetime, max_run: int = 5, max_day: int = 15, max_rolling: int = 15, snapshot: dict | None = None) -> bool:
+def reserve_attempt(db: sqlite3.Connection, *, vacancy_id: str, resume_id: str, run_id: int, letter: str, template_id: str, template_version: str, now: datetime, max_run: int = 20, max_day: int = 100, max_rolling: int = 100, snapshot: dict | None = None) -> bool:
     """Атомарный резерв для будущего отправщика; не отправляет запрос.
 
     Вызывающий код обязан заранее проверить все бизнес-условия и режим. Эта
     низкоуровневая функция не включает автоматическую отправку.
     """
     limits = (max_run, max_day, max_rolling)
-    if not vacancy_id.isdigit() or not resume_id or not letter.strip() or not template_id or not template_version or now.tzinfo is None or any(not isinstance(value, int) or isinstance(value, bool) or value < 1 for value in limits) or max_run > 5 or max_day > 15 or max_rolling > 15:
+    if not vacancy_id.isdigit() or not resume_id or not letter.strip() or not template_id or not template_version or now.tzinfo is None or any(not isinstance(value, int) or isinstance(value, bool) or value < 1 for value in limits) or max_run > 20 or max_day > 100 or max_rolling > 100:
         raise ValueError("invalid attempt")
     now = now.astimezone(MOSCOW)
     beginning = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -152,7 +152,7 @@ def finish_attempt(db: sqlite3.Connection, vacancy_id: str, http_status: int | N
     if isinstance(body, dict):
         evidence.update({"success": body.get("success") if isinstance(body.get("success"), (bool, int, str)) else None,
                          "chat_id_present": bool(body.get("chat_id")), "topic_id_present": bool(body.get("topic_id")),
-                         "response_keys": sorted(str(key) for key in body)})
+                         "captcha": "hhcaptcha" in body, "response_keys": sorted(str(key) for key in body)})
     with db:
         changed = db.execute("UPDATE application_attempts SET status=?,confirmed_at=?,detail=? WHERE vacancy_id=? AND status='sending'", (status, now.astimezone(MOSCOW).isoformat() if status == "confirmed" else None, json.dumps(evidence, ensure_ascii=False), vacancy_id)).rowcount
         if changed != 1:

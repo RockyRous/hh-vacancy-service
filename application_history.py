@@ -105,7 +105,7 @@ def queue_manual(db, *, vacancy_id, url, title, reason, seen_at, profile=None, r
 def manual_report(db):
     rows = db.execute("""SELECT m.vacancy_id,m.url,m.title,m.profile,m.reason FROM manual_applications m
         WHERE m.status='open' AND NOT EXISTS (SELECT 1 FROM application_attempts a
-        WHERE a.vacancy_id=m.vacancy_id AND a.status IN ('confirmed','duplicate','uncertain','sending'))
+        WHERE a.vacancy_id=m.vacancy_id AND a.status IN ('confirmed','duplicate','uncertain','uncertain_reviewed','sending'))
         AND NOT EXISTS (SELECT 1 FROM observed_hh_applications h WHERE h.vacancy_id=m.vacancy_id)
         ORDER BY m.first_seen,m.vacancy_id""").fetchall()
     lines = ["# Ручные отклики", "", "Анкеты не заполняются автоматически. Неизвестная форма тоже требует проверки.", ""]

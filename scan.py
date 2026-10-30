@@ -57,7 +57,7 @@ def fetch(url: str, cookies: str) -> str:
         raise StopScan(f"network or decoding error: {type(exc).__name__}") from None
 
 
-def parse_search(page: str, resume_id: str) -> tuple[list[dict], bool, int | None]:
+def parse_search(page: str, resume_id: str | None) -> tuple[list[dict], bool, int | None]:
     match = STATE.search(page)
     if not match:
         raise StopScan("search state missing; login or layout may have changed")
@@ -65,17 +65,19 @@ def parse_search(page: str, resume_id: str) -> tuple[list[dict], bool, int | Non
         state = json.loads(html.unescape(match.group(1)))
         result = state["vacancySearchResult"]
         params = result["proxiedSearchFormParams"]
-        if resume_id not in json.dumps(params):
+        if resume_id is not None and resume_id not in json.dumps(params):
             raise StopScan("search response does not confirm requested resume")
         rows = result["vacancies"]
         if not isinstance(rows, list):
             raise ValueError("vacancies is not a list")
         paging = result["paging"]
+        if not rows and result.get("totalResults") in (0, "0") and not paging:
+            return [], False, 0
         next_page = paging.get("next")
         if not isinstance(next_page, dict) or "disabled" not in next_page:
             raise ValueError("next page state missing")
         return rows, not next_page["disabled"], result.get("totalResults")
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         raise StopScan("unrecognized search response") from None
 
 
@@ -100,7 +102,7 @@ def normalize(row: dict, today: datetime.date) -> dict:
     return {"id": vid, "name": row.get("name") or "Без названия", "company": (company.get("visibleName") or company.get("name") or "") if isinstance(company, dict) else "", "url": f"https://hh.ru/vacancy/{vid}", "published": stamp, "date_status": date_status, "salary": salary, "salary_status": "below_200000" if excluded else "pass", "form_status": "not_checked", "form_reason": "", "profiles": []}
 
 
-def scan(profiles: dict, cookie: str, db_path: Path, report_path: Path, pause: float = 0.5, max_pages: int = 100) -> int:
+def scan(profiles: dict, cookie: str, db_path: Path, report_path: Path, pause: float = 0.5, max_pages: int = 100, include_general: bool = True) -> int:
     started = datetime.now(MOSCOW)
     today = started.date()
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,6 +148,41 @@ def scan(profiles: dict, cookie: str, db_path: Path, report_path: Path, pause: f
                 time.sleep(pause)
             else:
                 raise StopScan(f"page limit reached for {profile}")
+
+        # Общий поиск дополняет выдачи по резюме. Это ограниченный срез, а не
+        # полная выдача; релевантность затем проверяется теми же тремя профилями.
+        for term in (("Python", "AI Engineer", "Tech Lead Python") if include_general else ()):
+            source = "общий: " + term
+            profile_pages[source] = {"pages": 0, "complete": False, "total": None, "sample": True}
+            seen_pages = set()
+            for page in range(5):
+                if datetime.now(MOSCOW).date() != today:
+                    raise StopScan("Moscow date changed during scan")
+                params = urllib.parse.urlencode({"text": term, "search_field": "name", "page": page,
+                    "items_on_page": 20, "search_period": 1, "order_by": "publication_time"})
+                try:
+                    rows, has_next, total = parse_search(fetch("https://hh.ru/search/vacancy?" + params, cookie), None)
+                except StopScan as exc:
+                    if str(exc) != "unrecognized search response":
+                        raise
+                    profile_pages[source]["error"] = str(exc)
+                    break
+                fingerprint = tuple(str(row.get("vacancyId") or "") for row in rows)
+                if (has_next and not rows) or (fingerprint and fingerprint in seen_pages):
+                    raise StopScan("general search page repeated or empty")
+                seen_pages.add(fingerprint)
+                for raw in rows:
+                    if not isinstance(raw, dict):
+                        raise StopScan("invalid vacancy in search results")
+                    item = normalize(raw, today)
+                    if item["id"] not in found:
+                        found[item["id"]], raw_rows[item["id"]] = item, raw
+                    if source not in found[item["id"]]["profiles"]:
+                        found[item["id"]]["profiles"].append(source)
+                profile_pages[source].update(pages=page + 1, total=total, complete=not has_next)
+                if not has_next:
+                    break
+                time.sleep(pause)
 
         eligible = [v for v in found.values() if v["date_status"] == "today" and v["salary_status"] == "pass"]
         for number, item in enumerate(eligible, 1):
@@ -196,7 +233,9 @@ def render_report(run_id: int, started: datetime, status: str, error: str, pages
     passed = [v for v in today if v["salary_status"] == "pass"]
     lines = [f"# Обход {run_id} — {started.isoformat()}", f"Статус: {'завершён' if status == 'complete' else 'неполный'}" + (f"; причина: {error}" if error else ""), f"Уникальных: {len(rows)}; сегодня: {len(today)}; дата неизвестна: {sum(v['date_status'] == 'unknown' for v in rows)}; ниже зарплатного порога: {sum(v['salary_status'] == 'below_200000' for v in today)}; прошло зарплату: {len(passed)}.", f"Форма найдена: {sum(v['form_status'] == 'manual' for v in passed)}; не удалось исключить: {sum(v['form_status'] == 'unknown' for v in passed)}; не проверено: {sum(v['form_status'] == 'not_checked' for v in passed)}.", "", "## Профили"]
     for name, info in pages.items():
-        lines.append(f"- {name}: страниц {info['pages']}, всего у hh {info['total']}, закончен: {info['complete']}")
+        extra = "; ограниченный срез" if info.get("sample") and not info["complete"] else ""
+        extra += f"; ошибка: {info['error']}" if info.get("error") else ""
+        lines.append(f"- {name}: страниц {info['pages']}, всего у hh {info['total']}, закончен: {info['complete']}{extra}")
     lines += ["", "## Вакансии за сегодня, прошедшие зарплатный фильтр", ""]
     for v in passed:
         label = {"manual": "обнаружена анкета или внешняя форма", "unknown": "отсутствие анкеты не подтверждено", "not_checked": "не проверено", "clear": "проверено"}.get(v['form_status'], v['form_status'])

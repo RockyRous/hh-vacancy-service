@@ -193,10 +193,7 @@ def run_cycle() -> None:
         with control.connect() as db:
             cycle_extensions.queue_candidates(db, run_id, profiles, datetime.now(scan.MOSCOW))
             if result == 0 and control.enabled():
-                pilot_results = pilot_applications.run(db, run_id=run_id, profiles=profiles, cookie=cookie)
-                for entry in pilot_results:
-                    db.execute("INSERT INTO notifications(text,next_attempt) VALUES (?,?)", (
-                        f"Пилотный отклик: {entry['name']} — {entry['url']} | резюме: {entry['profile']} | результат: {entry['status']}", time.time()))
+                pilot_applications.run(db, run_id=run_id, profiles=profiles, cookie=cookie, notify=control.enqueue)
             cycle_extensions.render_manual(db)
         queue_cycle_report(run_id)
         if result and control.enabled():
@@ -220,10 +217,7 @@ def run_pilot_once() -> None:
             row = db.execute("SELECT id,started FROM runs WHERE status='complete' ORDER BY id DESC LIMIT 1").fetchone()
             if not row or datetime.fromisoformat(row[1]).astimezone(scan.MOSCOW).date() != datetime.now(scan.MOSCOW).date():
                 raise ValueError("нет завершённого сегодняшнего обхода")
-            results = pilot_applications.run(db, run_id=row[0], profiles=profiles, cookie=cookie)
-            for entry in results:
-                db.execute("INSERT INTO notifications(text,next_attempt) VALUES (?,?)", (
-                    f"Пилотный отклик: {entry['name']} — {entry['url']} | резюме: {entry['profile']} | результат: {entry['status']}", time.time()))
+            results = pilot_applications.run(db, run_id=row[0], profiles=profiles, cookie=cookie, notify=control.enqueue)
             cycle_extensions.render_manual(db)
         if not results:
             control.enqueue("Пилот: подходящих вакансий с проверенной простой формой не найдено; отправок нет.")
@@ -282,7 +276,7 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
         return 2
-    print("Telegram-бот запущен. Пилот: до одной попытки за обход.", flush=True)
+    print("Telegram-бот запущен. До 20 попыток отклика за обход.", flush=True)
     try:
         with control.single_instance():
             with control.connect() as db:

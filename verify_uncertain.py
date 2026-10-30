@@ -10,6 +10,7 @@ from pathlib import Path
 import control
 import cycle_extensions
 import scan
+import application_history
 from hh_application import HhApplication, Restricted
 
 
@@ -23,16 +24,13 @@ def run(include_confirmed=False):
         session = json.loads((Path.home() / ".codex/hh-session/session.json").read_text(encoding="utf-8-sig"))
         cookie = "; ".join(f"{k}={v}" for k, v in session["cookies"].items())
         topic = None
+        completed = []
         for kind in ("active", "archived"):
-            for number in range(50):
-                page = cycle_extensions.history_page(cookie, kind, number)
-                if not isinstance(page, dict) or page.get("filterInUse") != kind or not isinstance(page.get("topicList"), list):
-                    raise scan.StopScan("unrecognized history page")
-                topic = next((t for t in page["topicList"] if str(t.get("vacancyId")) == vid), None)
-                if topic:
-                    break
-                if number + 1 >= int(page["pageCount"]):
-                    break
+            pages, complete = application_history.read_pages(lambda number: cycle_extensions.history_page(cookie, kind, number), expected_filter=kind)
+            completed.append(complete)
+            if not complete:
+                raise scan.StopScan("incomplete history during verification")
+            topic = next((t for page in pages for t in page["topicList"] if str(t.get("vacancyId")) == vid), None)
             if topic:
                 break
         verified = None
@@ -73,8 +71,18 @@ def run(include_confirmed=False):
                             (datetime.now(scan.MOSCOW).isoformat(), json.dumps(detail, ensure_ascii=False), vid))
                 control.enqueue(f"Пилот: отклик https://hh.ru/vacancy/{vid} подтверждён повторным чтением hh. Письмо: {'совпало' if verified else 'не удалось проверить'}.")
                 return
-        control.set_enabled(False, reason="исход отклика не подтверждён")
-        control.enqueue(f"Пилот: отклик https://hh.ru/vacancy/{vid} пока не подтверждён; повторная отправка запрещена.")
+        if not topic and completed == [True, True]:
+            detail = json.loads(raw_detail or "{}")
+            detail.update({"history_rechecked": True, "history_scope": "active and archived; hidden data may be unavailable"})
+            with closing(sqlite3.connect(control.DEFAULT_DB)) as db:
+                with db:
+                    db.execute("UPDATE application_attempts SET status='uncertain_reviewed',detail=? WHERE vacancy_id=? AND status='uncertain'",
+                        (json.dumps(detail, ensure_ascii=False), vid))
+            control.enqueue(f"Отклик https://hh.ru/vacancy/{vid} в активной и архивной истории не найден. Исход остаётся неясным, повтор этой вакансии запрещён.")
+        else:
+            if control.enabled():
+                control.set_enabled(False, reason="исход отклика не подтверждён")
+            control.enqueue(f"Отклик https://hh.ru/vacancy/{vid} пока не подтверждён; повторная отправка запрещена.")
     except Exception as exc:
         (scan.ROOT / "data/verification-error.txt").write_text(f"{type(exc).__name__}: {exc}", encoding="utf-8")
         if control.enabled():

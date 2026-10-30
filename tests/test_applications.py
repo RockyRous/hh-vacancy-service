@@ -78,24 +78,24 @@ class ApplicationTests(unittest.TestCase):
         self.assertEqual(app.finish_attempt(self.db, "124", 200, {"success": True}, NOW, letter_verified=False), ("uncertain", True))
 
     def test_per_run_limit_counts_all_attempts(self):
-        for vid in range(10, 15):
+        for vid in range(10, 30):
             self.assertTrue(reserve(self.db, vid))
-        self.assertFalse(reserve(self.db, 15))
-        self.assertTrue(reserve(self.db, 15, run=2))
+        self.assertFalse(reserve(self.db, 30))
+        self.assertTrue(reserve(self.db, 30, run=2))
 
     def test_pilot_limits_cannot_be_relaxed(self):
         with self.assertRaises(ValueError):
-            app.reserve_attempt(self.db, vacancy_id="123", resume_id="resume", run_id=1, letter="Здравствуйте", template_id="a", template_version="1", now=NOW, max_day=16)
+            app.reserve_attempt(self.db, vacancy_id="123", resume_id="resume", run_id=1, letter="Здравствуйте", template_id="a", template_version="1", now=NOW, max_day=101)
 
     def test_rolling_day_limit_spans_midnight(self):
         before_midnight = NOW.replace(hour=23, minute=30) - timedelta(days=1)
-        for i in range(15):
+        for i in range(100):
             self.assertTrue(reserve(self.db, 100 + i, run=100 + i, now=before_midnight))
         self.assertFalse(reserve(self.db, 999, run=999, now=NOW))
         self.assertTrue(reserve(self.db, 999, run=999, now=NOW + timedelta(days=1)))
 
     def test_known_manual_attempts_count_toward_daily_limit(self):
-        app.import_history(self.db, [{"vacancy_id": str(200 + i), "status": "confirmed", "attempted_at": NOW.astimezone(timezone.utc).isoformat()} for i in range(15)])
+        app.import_history(self.db, [{"vacancy_id": str(200 + i), "status": "confirmed", "attempted_at": NOW.astimezone(timezone.utc).isoformat()} for i in range(100)])
         self.assertFalse(reserve(self.db, 999, now=NOW))
 
     def test_two_competing_reservations_allow_only_one(self):

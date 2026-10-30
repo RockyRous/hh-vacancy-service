@@ -19,7 +19,7 @@ def send_one_hh(db, *, db_path=control.DEFAULT_DB, **kwargs):
 
 
 def send_one(db, *, item, score, profiles, templates, run_id, now, evidence,
-             enabled, pause, post, verify=None, max_run=5):
+             enabled, pause, post, verify=None, max_run=20):
     """Проверить условия, сохранить намерение и вызвать post максимум один раз.
 
     evidence — результаты проверок вызывающего кода, а не настройки пользователя.

@@ -34,13 +34,14 @@ class ScanTests(unittest.TestCase):
         self.assertTrue(has_next)
         with self.assertRaises(StopScan):
             parse_search(page, "b" * 38)
+        self.assertEqual(parse_search(page, None)[0][0]["vacancyId"], 123)
 
     def test_partial_run_preserves_observations(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = Path(tmp)
             profiles = {"first": "a" * 38, "second": "b" * 38, "third": "c" * 38}
             with patch("scan.fetch", side_effect=[search_page("a" * 38, [123]), StopScan("hh HTTP 403")]):
-                result = scan(profiles, "", paths / "test.db", paths / "report.md", pause=0)
+                result = scan(profiles, "", paths / "test.db", paths / "report.md", pause=0, include_general=False)
             self.assertEqual(result, 1)
             self.assertIn("hh HTTP 403", (paths / "report.md").read_text(encoding="utf-8"))
             import sqlite3
@@ -65,7 +66,7 @@ class ScanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = Path(tmp)
             with patch("scan.fetch", side_effect=fake_fetch) as fetch:
-                result = scan(profiles, "", paths / "test.db", paths / "report.md", pause=0)
+                result = scan(profiles, "", paths / "test.db", paths / "report.md", pause=0, include_general=False)
             self.assertEqual(result, 0)
             self.assertEqual(fetch.call_count, 4)
             import sqlite3
@@ -76,6 +77,29 @@ class ScanTests(unittest.TestCase):
                 item = json.loads(rows[0][0])
                 self.assertEqual(item["profiles"], ["first", "second", "third"])
                 self.assertEqual(item["form_status"], "manual")
+            finally:
+                db.close()
+
+    def test_general_search_adds_candidates_and_marks_sample(self):
+        from urllib.parse import parse_qs, urlsplit
+        import sqlite3
+        today = datetime.now(MOSCOW).date().isoformat()
+        def fake_fetch(url, cookie):
+            if "/search/vacancy?" not in url:
+                return '<form name="vacancy_response" method="POST"><input type="hidden" name="_xsrf"></form>'
+            params = parse_qs(urlsplit(url).query)
+            resume = params.get("resume", [None])[0]
+            vid = 123 if resume else 456
+            return search_page(resume, [vid], next_page=not bool(resume)).replace("2026-10-29", today) if resume or params.get("page") == ["0"] else search_page(None, [789]).replace("2026-10-29", today)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = Path(tmp)
+            with patch("scan.fetch", side_effect=fake_fetch):
+                self.assertEqual(scan({"first": "a" * 38}, "", paths / "test.db", paths / "report.md", pause=0), 0)
+            db = sqlite3.connect(paths / "test.db")
+            try:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM observations").fetchone()[0], 3)
+                pages = json.loads(db.execute("SELECT profile_pages FROM runs").fetchone()[0])
+                self.assertTrue(pages["общий: Python"]["sample"])
             finally:
                 db.close()
 
