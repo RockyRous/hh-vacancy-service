@@ -79,6 +79,7 @@ class SenderTests(unittest.TestCase):
     def test_form_response_and_mismatched_letter(self):
         self.args["post"] = lambda *args: (400, {"error": "test-required"})
         self.assertEqual(self.send(), "manual")
+        self.assertEqual(self.db.execute("SELECT vacancy_id FROM manual_applications").fetchone()[0], "123")
         self.args["item"]["id"] = "124"
         self.args["post"] = self.post
         self.args["verify"] = lambda *args: False

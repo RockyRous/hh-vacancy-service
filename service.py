@@ -186,12 +186,15 @@ def run_cycle() -> None:
         control.enqueue("Работа hh остановлена: ошибка настроек или базы. Проверь локальные файлы, затем отправь /on.")
 
 
-async def run_bot(token: str, owner: int, stage1_probe: bool = False) -> None:
+async def run_bot(token: str, owner: int, stage1_probe: bool = False, stage2_probe: bool = False) -> None:
     was_enabled = False
     due = None
     worker = None
     if stage1_probe and control.enabled():
         import stage1_probe as probe
+        worker = asyncio.create_task(asyncio.to_thread(probe.run))
+    if stage2_probe and control.enabled() and worker is None:
+        import stage2_probe as probe
         worker = asyncio.create_task(asyncio.to_thread(probe.run))
     while True:
         active = control.enabled()
@@ -228,7 +231,8 @@ def main() -> int:
     print("Telegram-бот запущен. Отклики отключены.", flush=True)
     try:
         with control.single_instance():
-            asyncio.run(run_bot(token, owner, stage1_probe="--stage1-probe" in sys.argv))
+            asyncio.run(run_bot(token, owner, stage1_probe="--stage1-probe" in sys.argv,
+                                stage2_probe="--stage2-probe" in sys.argv))
     except KeyboardInterrupt:
         print("Остановлено.")
     except RuntimeError as exc:

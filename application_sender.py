@@ -3,6 +3,7 @@
 from datetime import datetime
 
 import applications
+import application_history
 import control
 from hh_application import HhApplication, Restricted, session
 
@@ -81,6 +82,12 @@ def send_one(db, *, item, score, profiles, templates, run_id, now, evidence,
     if verified is True and body.get("success") is not False and applications.classify_response(http_status, body)[0] == "uncertain":
         body = {**body, "success": True}
     status, should_pause = applications.finish_attempt(db, vid, http_status, body, now, letter_verified=verified)
+    if status == "manual":
+        application_history.setup(db)
+        application_history.queue_manual(db, vacancy_id=vid,
+            url=item.get("url") or f"https://hh.ru/vacancy/{vid}", title=item.get("name") or vid,
+            reason="hh требует тест или анкету", seen_at=now, profile=selected,
+            resume_id=profiles[selected])
     if should_pause or verification_restricted:
         pause()
     return status
