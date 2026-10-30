@@ -53,6 +53,10 @@ class ScoringTests(unittest.TestCase):
         result = score_vacancy("Lead Backend Engineer", "Node.js TypeScript PostgreSQL Redis Docker, архитектура, API, интеграции, команда и code review.")
         self.assertTrue(result["below_threshold"])
 
+    def test_rust_role_with_legacy_python_is_not_a_python_role(self):
+        result = score_vacancy("Middle Backend разработчик (Rust/С++)", "Основной язык Rust, часть legacy сервисов написана на Python. API SQL Docker архитектура.")
+        self.assertTrue(result["below_threshold"])
+
     def test_infrastructure_cto_without_python_is_not_admitted(self):
         result = score_vacancy("Технический директор (CTO)", "Управление серверной инфраструктурой, архитектура, команда, Docker, SQL, code review")
         self.assertTrue(result["below_threshold"])

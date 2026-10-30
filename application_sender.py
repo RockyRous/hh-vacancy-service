@@ -3,6 +3,18 @@
 from datetime import datetime
 
 import applications
+import control
+from hh_application import HhApplication, Restricted, session
+
+
+def send_one_hh(db, *, db_path=control.DEFAULT_DB, **kwargs):
+    """Подключить настоящий транспорт к механизму; все свидетельства обязательны."""
+    if not control.enabled(db_path):
+        return "off"
+    client = HhApplication(session(), enabled=lambda: control.enabled(db_path))
+    return send_one(db, enabled=lambda: control.enabled(db_path),
+                    pause=lambda: control.set_enabled(False, db_path, reason="неясный исход отклика hh"),
+                    post=client.post, verify=client.verify, **kwargs)
 
 
 def send_one(db, *, item, score, profiles, templates, run_id, now, evidence,
@@ -55,14 +67,20 @@ def send_one(db, *, item, score, profiles, templates, run_id, now, evidence,
         # Запрос мог дойти до hh; исключение никогда не означает разрешение на повтор.
         http_status, body = None, None
     verified = None
-    if applications.classify_response(http_status, body)[0] == "confirmed" and verify and enabled():
+    verification_restricted = False
+    if http_status in (200, 201) and isinstance(body, dict) and not body.get("error") and verify and enabled():
         try:
             verified = verify(vid, template["text"])
             if verified not in (True, False, None):
                 verified = None
+        except Restricted:
+            verification_restricted = True
         except Exception:
             verified = None
+    # Реальный формат success пока не зафиксирован; точное письмо — независимое подтверждение.
+    if verified is True and body.get("success") is not False and applications.classify_response(http_status, body)[0] == "uncertain":
+        body = {**body, "success": True}
     status, should_pause = applications.finish_attempt(db, vid, http_status, body, now, letter_verified=verified)
-    if should_pause:
+    if should_pause or verification_restricted:
         pause()
     return status

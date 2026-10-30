@@ -2,7 +2,7 @@
 
 import re
 
-VERSION = "2026-10-29-v8"
+VERSION = "2026-10-30-v9"
 
 ROLE = {
     "backend": ("python", "backend", "бэкенд", "бекенд", "бэкэнд"),
@@ -73,6 +73,7 @@ def score_vacancy(title: str, description: str) -> dict:
     ml_only = any(contains(title_text, word) for word in ("ml engineer", "ml-инженер", "машинного обучения")) and not any(contains(description.lower(), word) for word in ("llm", "rag", "агент", "large language model"))
     no_python = not required_match(description.lower(), "python") and not contains(title_text, "python")
     other_stack = no_python and any(contains(description.lower(), word) for word in ("node.js", "typescript", "php", "wordpress", "битрикс"))
+    other_primary_language = not contains(title_text, "python") and any(contains(title_text, word) for word in ("rust", "c++", "с++"))
     results = {}
     for profile in ("backend", "ai", "lead"):
         roles = [term.strip() for term in ROLE[profile] if contains(title_text, term)]
@@ -84,8 +85,8 @@ def score_vacancy(title: str, description: str) -> dict:
         total = role_points + skill_points + task_points
         explicit_backend_lead = any(contains(title_text, phrase) for phrase in ("backend", "бэкенд", "бекенд", "бэкэнд")) and any(contains(title_text, phrase) for phrase in ("tech lead", "team lead", "техлид", "тимлид"))
         no_python_blocks = no_python and not (profile in {"backend", "lead"} and roles and explicit_backend_lead and len(tasks) >= 3)
-        if unrelated or no_python_blocks or ml_only or other_stack:
+        if unrelated or no_python_blocks or ml_only or other_stack or other_primary_language:
             total = min(total, 49)
-        results[profile] = {"score": total, "role_points": role_points, "skill_points": skill_points, "task_points": task_points, "role_matches": roles, "skills": skills, "tasks": tasks, "title_mismatch": unrelated, "no_python_signal": no_python, "ml_without_llm_signal": ml_only, "other_stack_without_python": other_stack}
+        results[profile] = {"score": total, "role_points": role_points, "skill_points": skill_points, "task_points": task_points, "role_matches": roles, "skills": skills, "tasks": tasks, "title_mismatch": unrelated, "no_python_signal": no_python, "ml_without_llm_signal": ml_only, "other_stack_without_python": other_stack, "other_primary_language": other_primary_language}
     selected = max(results, key=lambda profile: (results[profile]["score"], results[profile]["role_points"], results[profile]["skill_points"], profile == "lead" and any(contains(title_text, phrase) for phrase in ("tech lead", "team lead", "техлид", "тимлид")), -list(results).index(profile)))
     return {"version": VERSION, "status": "scored", "scores": results, "selected": selected, "below_threshold": all(r["score"] < 50 for r in results.values())}

@@ -2,9 +2,11 @@ import json
 import sqlite3
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 import applications
-from application_sender import send_one
+from application_sender import send_one, send_one_hh
+from hh_application import Restricted
 
 
 NOW = datetime(2026, 10, 30, 12, tzinfo=applications.MOSCOW)
@@ -90,6 +92,30 @@ class SenderTests(unittest.TestCase):
         self.assertEqual(self.send(), "confirmed")
         detail = self.db.execute("SELECT detail FROM application_attempts").fetchone()[0]
         self.assertIsNone(json.loads(detail)["letter_verified"])
+
+    def test_verified_letter_confirms_unknown_success_format(self):
+        self.args["post"] = lambda *args: (200, {"chat_id": 42})
+        self.args["verify"] = lambda *args: True
+        self.assertEqual(self.send(), "confirmed")
+
+    def test_restricted_verification_pauses(self):
+        def restricted(*args):
+            raise Restricted()
+        self.args["verify"] = restricted
+        self.assertEqual(self.send(), "confirmed")
+        self.assertEqual(len(self.paused), 1)
+
+    @patch("application_sender.session", return_value={"_xsrf": "fake"})
+    @patch("application_sender.control.enabled", return_value=True)
+    @patch("application_sender.HhApplication")
+    def test_real_transport_is_wired_to_journal(self, client_type, enabled, session):
+        client_type.return_value.post.return_value = (200, {"success": True})
+        client_type.return_value.verify.return_value = True
+        args = {key: value for key, value in self.args.items() if key not in {"enabled", "pause", "post"}}
+        self.assertEqual(send_one_hh(self.db, **args), "confirmed")
+        client_type.return_value.post.assert_called_once()
+        client_type.return_value.verify.assert_called_once()
+        self.assertEqual(self.db.execute("SELECT status FROM application_attempts").fetchone()[0], "confirmed")
 
 
 if __name__ == "__main__":
