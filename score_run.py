@@ -12,6 +12,7 @@ from pathlib import Path
 
 from scan import MOSCOW, ROOT, STATE, StopScan, fetch
 from scoring import salary_upper_from_text, score_vacancy
+import control
 
 
 def vacancy_text(page: str) -> str:
@@ -29,14 +30,14 @@ def vacancy_text(page: str) -> str:
         raise StopScan("unrecognized vacancy description") from None
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Оценка вакансий последнего обхода, только чтение")
     parser.add_argument("--db", type=Path, default=ROOT / "data/vacancies.sqlite3")
     parser.add_argument("--session", type=Path, default=Path.home() / ".codex/hh-session/session.json")
     parser.add_argument("--report", type=Path, default=ROOT / "reports/scored.md")
     parser.add_argument("--limit", type=int, default=0, help="ограничить число вакансий, 0 — все")
     parser.add_argument("--offline", action="store_true", help="переоценить сохранённые описания без запросов к hh")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not args.db.exists():
         print("Нет базы обхода: сначала запусти python scan.py", file=sys.stderr)
         return 2
@@ -130,4 +131,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        with control.single_instance():
+            raise SystemExit(main())
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2)

@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from form_handling import classify_form, detect_questions_in_html
+import control
 
 ROOT = Path(__file__).resolve().parent
 MOSCOW = timezone(timedelta(hours=3))
@@ -32,10 +33,14 @@ class HhRedirect(urllib.request.HTTPRedirectHandler):
         parsed = urllib.parse.urlsplit(newurl)
         if parsed.scheme != "https" or parsed.hostname not in {"hh.ru", "spb.hh.ru"}:
             return None
+        if not control.enabled():
+            raise StopScan("hh is switched off")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def fetch(url: str, cookies: str) -> str:
+    if not control.enabled():
+        raise StopScan("hh is switched off")
     request = urllib.request.Request(url, headers={"User-Agent": UA, "Cookie": cookies, "Accept-Language": "ru-RU,ru;q=0.9"})
     try:
         with urllib.request.build_opener(HhRedirect()).open(request, timeout=25) as response:
@@ -221,4 +226,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        with control.single_instance():
+            raise SystemExit(main())
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2)
